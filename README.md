@@ -4,7 +4,6 @@ This repo is a fork of original Chamber tool ([segmentio/chamber](https://github
 * (WIP) Add inheritance. Allow loading multiple parameters for hierarchically named services. For instance, `<project>-<env>-<service>` would load all parameters for the specified project (`<project>`), for the env within the project (`<project>-<env>`) and for the specific service in inverse order of precedence.
 * (WIP) Replace behavior of delete action to tag deleted credentials instead of removing them from parameter store. The goal is to allow recovery in case of misdeletion of credentials.
 * (WIP) Allow reverting parameters to a specific version.
-* (WIP) Fix issues that prevent adding parameters with certain values (e.g. values that start with "--")
 
 # Chamber
 
@@ -84,6 +83,9 @@ key already exists, it will increment the version and store a new value.
 If `-` is provided as the value argument, the value will be read from standard
 input.
 
+#### Writing Values That Look Like Flags
+
+In order to write values that may be interpret as flags (e.g. values that start with `-` or `--`) escape them using `--`. After `--`, the arguments will not be parsed as flags. For instance, the command `chamber write service_name key_name -- --value` will write `--value` to the Parameter Store for key `/service_name/key_name`. 
 
 ### Listing Secrets
 
