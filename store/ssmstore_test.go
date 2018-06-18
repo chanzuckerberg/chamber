@@ -23,6 +23,7 @@ type mockParameter struct {
 	currentParam *ssm.Parameter
 	history      []*ssm.ParameterHistory
 	meta         *ssm.ParameterMetadata
+	tags         []*ssm.Tag
 }
 
 func (m *mockSSMClient) PutParameter(i *ssm.PutParameterInput) (*ssm.PutParameterOutput, error) {
@@ -191,6 +192,17 @@ func (m *mockSSMClient) DeleteParameter(i *ssm.DeleteParameterInput) (*ssm.Delet
 	delete(m.parameters, *i.Name)
 
 	return &ssm.DeleteParameterOutput{}, nil
+}
+
+func (m *mockSSMClient) ListTagsForResource(i *ssm.ListTagsForResourceInput) (*ssm.ListTagsForResourceOutput, error) {
+	parameter, ok := m.parameters[*i.ResourceId]
+	if !ok {
+		return &ssm.ListTagsForResourceOutput{}, errors.New("resource not found")
+	}
+
+	return &ssm.ListTagsForResourceOutput{
+		TagList: parameter.tags,
+	}, nil
 }
 
 func paramNameInSlice(name *string, slice []*string) bool {
