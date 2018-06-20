@@ -152,7 +152,7 @@ func (s *SSMStore) Delete(id SecretId) error {
 func (s *SSMStore) TagDeleted(id SecretId) error {
 	tags := []*ssm.Tag{
 		&ssm.Tag{
-			Key: aws.String("Deleted2"),
+			Key: aws.String("Deleted"),
 			Value: aws.String("true"),
 		},
 	}
