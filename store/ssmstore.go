@@ -115,6 +115,8 @@ func (s *SSMStore) Write(id SecretId, value string) error {
 		return err
 	}
 
+	s.UntagDeleted(id)
+
 	return nil
 }
 
@@ -149,6 +151,13 @@ func (s *SSMStore) Delete(id SecretId) error {
 	return nil
 }
 
+// Removes Deleted Tag from the resource
+func (s *SSMStore) UntagDeleted(id SecretId) error {
+	keys := []*string{aws.String("Deleted")}
+	return s.Untag(id, keys)
+}
+
+// Add a tag to resource with Key:Deleted
 func (s *SSMStore) TagDeleted(id SecretId) error {
 	tags := []*ssm.Tag{
 		&ssm.Tag{
@@ -185,6 +194,27 @@ func (s *SSMStore) Tag(id SecretId, tags []*ssm.Tag) error {
 	}
 
 	_, err = s.svc.AddTagsToResource(addTagsToResourceInput)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Remove tags from resource
+func (s *SSMStore) Untag(id SecretId, keys []*string) error {
+	_, err := s.Read(id, -1)
+	if err != nil {
+		return err
+	}
+
+	removeTagsFromResourceInput := &ssm.RemoveTagsFromResourceInput {
+		ResourceId: aws.String(s.idToName(id)),
+		ResourceType: aws.String("Parameter"),
+		TagKeys: keys,
+	}
+
+	_, err = s.svc.RemoveTagsFromResource(removeTagsFromResourceInput)
 	if err != nil {
 		return err
 	}
@@ -316,8 +346,8 @@ func (s *SSMStore) readLatest(id SecretId) (Secret, error) {
 // List lists all secrets for a given service.  If includeValues is true,
 // then those secrets are decrypted and returned, otherwise only the metadata
 // about a secret is returned.
-func (s *SSMStore) List(service string, includeValues bool, includeDeleted bool) ([]Secret, error) {
-	secrets := map[string]Secret{}
+func (s *SSMStore) List(service string, includeValues bool, includeDeleted bool) ([]*Secret, error) {
+	secrets := map[string]*Secret{}
 
 	var nextToken *string
 	for {
@@ -358,7 +388,7 @@ func (s *SSMStore) List(service string, includeValues bool, includeDeleted bool)
 				continue
 			}
 			secretMeta := parameterMetaToSecretMeta(meta)
-			secrets[secretMeta.Key] = Secret{
+			secrets[secretMeta.Key] = &Secret{
 				Value: nil,
 				Meta:  secretMeta,
 			}
@@ -371,15 +401,17 @@ func (s *SSMStore) List(service string, includeValues bool, includeDeleted bool)
 		nextToken = resp.NextToken
 	}
 
-	if !includeDeleted {
-		secretKeys := keys(secrets)
-		for _, secretKey := range secretKeys {
-			isDeleted, err := s.isDeleted(secretKey)
-			if err != nil {
-				return nil, err
-			}
-			if isDeleted {
+	secretKeys := keys(secrets)
+	for _, secretKey := range secretKeys {
+		isDeleted, err := s.isDeleted(secretKey)
+		if err != nil {
+			return nil, err
+		}
+		if isDeleted {
+			if !includeDeleted {
 				delete(secrets, secretKey)
+			} else {
+				secrets[secretKey].Deleted = isDeleted
 			}
 		}
 	}
@@ -610,7 +642,7 @@ func parameterMetaToSecretMeta(p *ssm.ParameterMetadata) SecretMetadata {
 	}
 }
 
-func keys(m map[string]Secret) []string {
+func keys(m map[string]*Secret) []string {
 	keys := []string{}
 	for k := range m {
 		keys = append(keys, k)
@@ -618,8 +650,8 @@ func keys(m map[string]Secret) []string {
 	return keys
 }
 
-func values(m map[string]Secret) []Secret {
-	values := []Secret{}
+func values(m map[string]*Secret) []*Secret {
+	values := []*Secret{}
 	for _, v := range m {
 		values = append(values, v)
 	}
