@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ type mockParameter struct {
 	currentParam *ssm.Parameter
 	history      []*ssm.ParameterHistory
 	meta         *ssm.ParameterMetadata
+	tags         []*ssm.Tag
 }
 
 func (m *mockSSMClient) PutParameter(i *ssm.PutParameterInput) (*ssm.PutParameterOutput, error) {
@@ -193,6 +195,33 @@ func (m *mockSSMClient) DeleteParameter(i *ssm.DeleteParameterInput) (*ssm.Delet
 	return &ssm.DeleteParameterOutput{}, nil
 }
 
+func (m *mockSSMClient) ListTagsForResource(i *ssm.ListTagsForResourceInput) (*ssm.ListTagsForResourceOutput, error) {
+	parameter, ok := m.parameters[*i.ResourceId]
+	if !ok {
+		return &ssm.ListTagsForResourceOutput{}, errors.New("resource not found")
+	}
+
+	return &ssm.ListTagsForResourceOutput{
+		TagList: parameter.tags,
+	}, nil
+}
+
+func (m *mockSSMClient) AddTagsToResource(i *ssm.AddTagsToResourceInput) (*ssm.AddTagsToResourceOutput, error) {
+	parameter, ok := m.parameters[*i.ResourceId]
+	if !ok {
+		return &ssm.AddTagsToResourceOutput{}, errors.New("resource not found")
+	}
+
+	if *i.ResourceType != "Parameter" {
+		return &ssm.AddTagsToResourceOutput{}, errors.New(fmt.Sprintf("wrong resource type: %s", *i.ResourceType))
+	}
+
+	parameter.tags = i.Tags
+	m.parameters[*i.ResourceId] = parameter
+
+	return &ssm.AddTagsToResourceOutput{}, nil
+}
+
 func paramNameInSlice(name *string, slice []*string) bool {
 	for _, val := range slice {
 		if *val == *name {
@@ -347,7 +376,7 @@ func TestRead(t *testing.T) {
 		assert.Equal(t, "third value", *s.Value)
 	})
 
-	t.Run("Reading specific versiosn should work", func(t *testing.T) {
+	t.Run("Reading specific version should work", func(t *testing.T) {
 		first, err := store.Read(secretId, 1)
 		assert.Nil(t, err)
 		assert.Equal(t, "value", *first.Value)
@@ -370,6 +399,13 @@ func TestRead(t *testing.T) {
 		_, err := store.Read(secretId, 30)
 		assert.Equal(t, ErrSecretNotFound, err)
 	})
+
+	store.TagDeleted(secretId)
+	t.Run("Reading a deleted item should work", func(t *testing.T) {
+		s, err := store.Read(secretId, -1)
+		assert.Nil(t, err)
+		assert.Equal(t, "third value", *s.Value)
+	})
 }
 
 func TestList(t *testing.T) {
@@ -380,13 +416,15 @@ func TestList(t *testing.T) {
 		{Service: "test", Key: "a"},
 		{Service: "test", Key: "b"},
 		{Service: "test", Key: "c"},
+		{Service: "test", Key: "d"},
 	}
 	for _, secret := range secrets {
 		store.Write(secret, "value")
 	}
+	store.TagDeleted(secrets[3])
 
-	t.Run("List should return all keys for a service", func(t *testing.T) {
-		s, err := store.List("test", false)
+	t.Run("List should return non-tag-deleted keys for a service", func(t *testing.T) {
+		s, err := store.List("test", false, false)
 		assert.Nil(t, err)
 		assert.Equal(t, 3, len(s))
 		sort.Sort(ByKey(s))
@@ -396,7 +434,7 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("List should not return values if includeValues is false", func(t *testing.T) {
-		s, err := store.List("test", false)
+		s, err := store.List("test", false, false)
 		assert.Nil(t, err)
 		for _, secret := range s {
 			assert.Nil(t, secret.Value)
@@ -404,7 +442,7 @@ func TestList(t *testing.T) {
 	})
 
 	t.Run("List should return values if includeValues is true", func(t *testing.T) {
-		s, err := store.List("test", true)
+		s, err := store.List("test", true, false)
 		assert.Nil(t, err)
 		for _, secret := range s {
 			assert.Equal(t, "value", *secret.Value)
@@ -415,10 +453,21 @@ func TestList(t *testing.T) {
 		store.Write(SecretId{Service: "match", Key: "a"}, "val")
 		store.Write(SecretId{Service: "matchlonger", Key: "a"}, "val")
 
-		s, err := store.List("match", false)
+		s, err := store.List("match", false, false)
 		assert.Nil(t, err)
 		assert.Equal(t, 1, len(s))
 		assert.Equal(t, "match.a", s[0].Meta.Key)
+	})
+
+	t.Run("List should return all keys if includeDelete is true", func(t *testing.T) {
+		s, err := store.List("test", false, true)
+		assert.Nil(t, err)
+		assert.Equal(t, 4, len(s))
+		sort.Sort(ByKey(s))
+		assert.Equal(t, "test.a", s[0].Meta.Key)
+		assert.Equal(t, "test.b", s[1].Meta.Key)
+		assert.Equal(t, "test.c", s[2].Meta.Key)
+		assert.Equal(t, "test.d", s[3].Meta.Key)
 	})
 }
 
@@ -430,12 +479,14 @@ func TestListRaw(t *testing.T) {
 		{Service: "test", Key: "a"},
 		{Service: "test", Key: "b"},
 		{Service: "test", Key: "c"},
+		{Service: "test", Key: "d"},
 	}
 	for _, secret := range secrets {
 		store.Write(secret, "value")
 	}
+	store.TagDeleted(secrets[3])
 
-	t.Run("ListRaw should return all keys and values for a service", func(t *testing.T) {
+	t.Run("ListRaw should return non-tag-deleted keys and values for a service", func(t *testing.T) {
 		s, err := store.ListRaw("test")
 		assert.Nil(t, err)
 		assert.Equal(t, 3, len(s))
@@ -583,7 +634,7 @@ func TestReadPaths(t *testing.T) {
 		assert.Equal(t, "third value", *s.Value)
 	})
 
-	t.Run("Reading specific versiosn should work", func(t *testing.T) {
+	t.Run("Reading specific version should work", func(t *testing.T) {
 		first, err := store.Read(secretId, 1)
 		assert.Nil(t, err)
 		assert.Equal(t, "value", *first.Value)
@@ -616,13 +667,15 @@ func TestListPaths(t *testing.T) {
 		{Service: "test", Key: "a"},
 		{Service: "test", Key: "b"},
 		{Service: "test", Key: "c"},
+		{Service: "test", Key: "d"},
 	}
 	for _, secret := range secrets {
 		store.Write(secret, "value")
 	}
+	store.TagDeleted(secrets[3])
 
-	t.Run("List should return all keys for a service", func(t *testing.T) {
-		s, err := store.List("test", false)
+	t.Run("List should return non-tag-deleted keys for a service", func(t *testing.T) {
+		s, err := store.List("test", false, false)
 		assert.Nil(t, err)
 		assert.Equal(t, 3, len(s))
 		sort.Sort(ByKey(s))
@@ -632,7 +685,7 @@ func TestListPaths(t *testing.T) {
 	})
 
 	t.Run("List should not return values if includeValues is false", func(t *testing.T) {
-		s, err := store.List("test", false)
+		s, err := store.List("test", false, false)
 		assert.Nil(t, err)
 		for _, secret := range s {
 			assert.Nil(t, secret.Value)
@@ -640,7 +693,7 @@ func TestListPaths(t *testing.T) {
 	})
 
 	t.Run("List should return values if includeValues is true", func(t *testing.T) {
-		s, err := store.List("test", true)
+		s, err := store.List("test", true, false)
 		assert.Nil(t, err)
 		for _, secret := range s {
 			assert.Equal(t, "value", *secret.Value)
@@ -651,10 +704,21 @@ func TestListPaths(t *testing.T) {
 		store.Write(SecretId{Service: "match", Key: "a"}, "val")
 		store.Write(SecretId{Service: "matchlonger", Key: "a"}, "val")
 
-		s, err := store.List("match", false)
+		s, err := store.List("match", false, false)
 		assert.Nil(t, err)
 		assert.Equal(t, 1, len(s))
 		assert.Equal(t, "/match/a", s[0].Meta.Key)
+	})
+
+	t.Run("List should return all keys for a service", func(t *testing.T) {
+		s, err := store.List("test", false, true)
+		assert.Nil(t, err)
+		assert.Equal(t, 4, len(s))
+		sort.Sort(ByKey(s))
+		assert.Equal(t, "/test/a", s[0].Meta.Key)
+		assert.Equal(t, "/test/b", s[1].Meta.Key)
+		assert.Equal(t, "/test/c", s[2].Meta.Key)
+		assert.Equal(t, "/test/d", s[3].Meta.Key)
 	})
 }
 
@@ -712,6 +776,23 @@ func TestDelete(t *testing.T) {
 	t.Run("Deleting missing secret should fail", func(t *testing.T) {
 		err := store.Delete(SecretId{Service: "test", Key: "nonkey"})
 		assert.Equal(t, ErrSecretNotFound, err)
+	})
+}
+
+func TestTagDeleted(t *testing.T) {
+	mock := &mockSSMClient{parameters: map[string]mockParameter{}}
+	store := NewTestSSMStore(mock)
+
+	secretId := SecretId{Service: "test", Key: "key"}
+	store.Write(secretId, "value")
+
+	t.Run("Tag secret as deleted should work", func(t *testing.T) {
+		err := store.TagDeleted(secretId)
+		assert.Nil(t, err)
+		assert.Contains(t, mock.parameters, store.idToName(secretId))
+		assert.Equal(t, "value", *mock.parameters[store.idToName(secretId)].currentParam.Value)
+		assert.Equal(t, 1, len(mock.parameters[store.idToName(secretId)].tags))
+		assert.Equal(t, "Deleted", *mock.parameters[store.idToName(secretId)].tags[0].Key)
 	})
 }
 

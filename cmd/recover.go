@@ -9,23 +9,19 @@ import (
 )
 
 var (
-	force bool
-
-	// deleteCmd represents the delete command
-	deleteCmd = &cobra.Command{
-		Use:   "delete <service> <key>",
-		Short: "Tag a secret as deleted (all versions of the secret will remain in the parameter store)",
+	recoverCmd = &cobra.Command{
+		Use:   "recover <service> <key>",
+		Short: "recover a previously deleted parameter",
 		Args:  cobra.ExactArgs(2),
-		RunE:  delete,
+		RunE:  recover,
 	}
 )
 
 func init() {
-	deleteCmd.Flags().BoolVarP(&force, "force", "f", false, "Actually delete a secret, including all versions (non-reversible).")
-	RootCmd.AddCommand(deleteCmd)
+	RootCmd.AddCommand(recoverCmd)
 }
 
-func delete(cmd *cobra.Command, args []string) error {
+func recover(cmd *cobra.Command, args []string) error {
 	service := strings.ToLower(args[0])
 	if err := validateService(service); err != nil {
 		return errors.Wrap(err, "Failed to validate service")
@@ -42,8 +38,5 @@ func delete(cmd *cobra.Command, args []string) error {
 		Key:     key,
 	}
 
-	if force {
-		return secretStore.Delete(secretId)
-	}
-	return secretStore.TagDeleted(secretId)
+	return secretStore.UntagDeleted(secretId)
 }
